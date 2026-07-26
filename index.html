@@ -980,6 +980,9 @@
         let cloudSession = null;
         let cloudReady = false;
         let cloudSaveTimer = null;
+        let cloudSaveInFlight = null;
+        let localRevision = 0;
+        let lastSavedRevision = 0;
 
         function cloudHeaders(withJson = true) {
             const headers = { apikey: SUPABASE_PUBLISHABLE_KEY };
@@ -1103,22 +1106,38 @@
 
         async function saveCloudStateNow() {
             if (!cloudReady || !cloudSession?.user?.id) return;
+            clearTimeout(cloudSaveTimer);
+            cloudSaveTimer = null;
+            if (cloudSaveInFlight) {
+                await cloudSaveInFlight;
+                if (localRevision > lastSavedRevision) return saveCloudStateNow();
+                return;
+            }
+            const revisionToSave = localRevision;
+            const stateToSave = serializeCloudState();
             setCloudStatus('☁️ Запазване…', 'saving');
-            try {
+            cloudSaveInFlight = (async () => {
                 await refreshCloudSessionIfNeeded();
                 const response = await fetch(`${SUPABASE_URL}/rest/v1/app_state?on_conflict=user_id`, {
                     method:'POST',
                     headers:{ ...cloudHeaders(), Prefer:'resolution=merge-duplicates,return=minimal' },
-                    body:JSON.stringify({ user_id:cloudSession.user.id, data:serializeCloudState(), updated_at:new Date().toISOString() })
+                    body:JSON.stringify({ user_id:cloudSession.user.id, data:stateToSave, updated_at:new Date().toISOString() })
                 });
                 if (!response.ok) {
                     const err = await response.json().catch(() => ({}));
                     throw new Error(err.message || 'Грешка при облачното записване.');
                 }
+                lastSavedRevision = Math.max(lastSavedRevision, revisionToSave);
                 setCloudStatus('☁️ Запазено');
+            })();
+            try {
+                await cloudSaveInFlight;
             } catch (error) {
                 console.error(error);
                 setCloudStatus('⚠️ Не е синхронизирано', 'error');
+            } finally {
+                cloudSaveInFlight = null;
+                if (localRevision > lastSavedRevision) scheduleCloudSave();
             }
         }
 
@@ -1161,6 +1180,11 @@
         window.addEventListener('focus', async () => {
             if (!cloudReady || !cloudSession?.user?.id) return;
             try {
+                if (cloudSaveTimer || cloudSaveInFlight || localRevision > lastSavedRevision) {
+                    setCloudStatus('☁️ Довършване на записа…', 'saving');
+                    await saveCloudStateNow();
+                    return;
+                }
                 setCloudStatus('☁️ Проверка…', 'saving');
                 await loadCloudState();
                 renderAll();
@@ -1374,9 +1398,10 @@
 
         function saveData() {
             if (!activeTargetUser) return;
+            localRevision++;
             persistLocalCache();
             scheduleCloudSave();
-            if (!isRendering) renderAll();
+            renderAll();
         }
 
         function openSubscriptionPayInfoModal() {
@@ -1788,32 +1813,46 @@
 
         let isRendering = false;
         function renderAll() {
-            if (isRendering) return;
+            if (isRendering) {
+                queueMicrotask(() => renderAll());
+                return;
+            }
             isRendering = true;
             try {
-                updateDistributorFilterOptions();
-                renderScheduleForDate();
-                renderFourWeeksSchedule();
-                renderDistributors();
-                renderInventory();
-                renderObjects();
-                updateSelectOptions();
-                renderPayments();
-                renderAccounting();
-                renderStats();
-                renderOrdersTab();
-                updateAllAromaSelects();
-                updateDeviceModelSelects();
-                updateDirectSaleItemOptions();
-                updateDirectSaleObjectOptions();
-                renderDirectSaleCart();
-                updateAllStockRowsDistributorSelects();
-                updateBatteryItemSelectOptions();
-                updateSuggestedSubscriptionPrice();
-                setAccountingDefaults();
-                loadBusinessSettingsToForm();
-                updateOfferObjectOptions();
-                renderOffers();
+                const renderSteps = [
+                    ['филтри', updateDistributorFilterOptions],
+                    ['дневен график', renderScheduleForDate],
+                    ['30-дневен график', renderFourWeeksSchedule],
+                    ['дистрибутори', renderDistributors],
+                    ['склад', renderInventory],
+                    ['обекти', renderObjects],
+                    ['основни избори', updateSelectOptions],
+                    ['плащания', renderPayments],
+                    ['счетоводство', renderAccounting],
+                    ['статистика', renderStats],
+                    ['заявки', renderOrdersTab],
+                    ['аромати', updateAllAromaSelects],
+                    ['дозатори', updateDeviceModelSelects],
+                    ['артикули за продажба', updateDirectSaleItemOptions],
+                    ['клиенти за продажба', updateDirectSaleObjectOptions],
+                    ['кошница', renderDirectSaleCart],
+                    ['дистрибутори в склада', updateAllStockRowsDistributorSelects],
+                    ['батерии', updateBatteryItemSelectOptions],
+                    ['абонаментна цена', updateSuggestedSubscriptionPrice],
+                    ['счетоводни настройки', setAccountingDefaults],
+                    ['бизнес настройки', loadBusinessSettingsToForm],
+                    ['клиенти за оферта', updateOfferObjectOptions],
+                    ['оферти', renderOffers]
+                ];
+                const failed = [];
+                renderSteps.forEach(([name, step]) => {
+                    try { step(); }
+                    catch (error) {
+                        failed.push(name);
+                        console.error(`Грешка при обновяване: ${name}`, error);
+                    }
+                });
+                if (failed.length) setCloudStatus(`⚠️ Необновени секции: ${failed.join(', ')}`, 'error');
             } finally {
                 isRendering = false;
             }
