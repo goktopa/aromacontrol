@@ -874,6 +874,14 @@
                 <label>Дистрибутор *</label>
                 <select id="edit-inv-dist" class="form-control" required></select>
             </div>
+            <div class="form-group">
+                <label>Вид на артикула *</label>
+                <select id="edit-inv-type" class="form-control" required>
+                    <option value="Аромат">Аромат</option>
+                    <option value="Дозатор">Дозатор</option>
+                    <option value="Консуматив">Консуматив (батерия/други)</option>
+                </select>
+            </div>
             <div class="form-row-3">
                 <div class="form-group">
                     <label>Наличност (бр.)</label>
@@ -1043,7 +1051,7 @@
         }
 
         function serializeCloudState() {
-            return { distributors, objects, sales, inventory, expenses, sentOrders, recurringExpenses, offers, businessSettings, publisher:getPublisherData(), schemaVersion:82 };
+            return { distributors, objects, sales, inventory, expenses, sentOrders, recurringExpenses, offers, businessSettings, publisher:getPublisherData(), schemaVersion:83 };
         }
 
         function applyCloudState(data) {
@@ -1057,6 +1065,7 @@
             offers = Array.isArray(data.offers) ? data.offers : [];
             businessSettings = data.businessSettings || {};
             if (data.publisher) localStorage.setItem(getUserKeys().publisher, JSON.stringify(data.publisher));
+            return normalizeLoadedData();
         }
 
         async function loadCloudState() {
@@ -1067,14 +1076,15 @@
                 throw new Error(err.message || 'Таблицата още не е създадена. Изпълни предоставения SQL файл в Supabase.');
             }
             const rows = await response.json();
+            let migrated = false;
             if (rows[0]?.data) {
-                applyCloudState(rows[0].data);
+                migrated = applyCloudState(rows[0].data);
             } else {
                 loadUserData();
             }
             cloudReady = true;
             persistLocalCache();
-            if (!rows.length) await saveCloudStateNow();
+            if (!rows.length || migrated) await saveCloudStateNow();
         }
 
         function persistLocalCache() {
@@ -1273,15 +1283,53 @@
                 return true;
             });
 
-            // Миграция на стари складови записи към разширения ценови модел.
-            inventory.forEach(item => {
-                const legacyPrice = Number(item.lastPrice) || 0;
-                if (item.purchasePriceNet == null) item.purchasePriceNet = legacyPrice;
-                if (item.purchasePriceGross == null) item.purchasePriceGross = 0;
-                if (item.markupPercent == null) item.markupPercent = 0;
-                if (item.salePrice == null) item.salePrice = legacyPrice;
-            });
+            normalizeLoadedData();
             migrateInitialServiceCosts(k);
+        }
+
+        function normalizeInventoryType(type, name = '') {
+            const raw = String(type || '').trim();
+            const value = raw.toLocaleLowerCase('bg-BG');
+            const itemName = String(name || '').toLocaleLowerCase('bg-BG');
+            if (['дозатор', 'диспенсър', 'диспансър', 'device', 'dispenser', 'апарат'].includes(value) ||
+                /дозатор|диспенс|арома\s*машина/.test(itemName)) return 'Дозатор';
+            if (['консуматив', 'батерия', 'battery'].includes(value) ||
+                /батери|battery/.test(itemName)) return 'Консуматив';
+            if (['аромат', 'ароматизатор', 'пълнител', 'refill', 'fragrance'].includes(value)) return 'Аромат';
+            return raw || 'Аромат';
+        }
+
+        function isDeviceItem(item) {
+            return normalizeInventoryType(item?.type, item?.name) === 'Дозатор';
+        }
+
+        function isAromaItem(item) {
+            return normalizeInventoryType(item?.type, item?.name) === 'Аромат';
+        }
+
+        function isConsumableItem(item) {
+            return normalizeInventoryType(item?.type, item?.name) === 'Консуматив';
+        }
+
+        function normalizeLoadedData() {
+            let changed = false;
+            inventory.forEach(item => {
+                const normalizedType = normalizeInventoryType(item.type, item.name);
+                if (item.type !== normalizedType) { item.type = normalizedType; changed = true; }
+                const legacyPrice = Number(item.purchasePriceNet ?? item.lastPrice) || 0;
+                const normalizedQty = Math.max(0, Number(item.qty) || 0);
+                const normalizedMin = Math.max(0, Number(item.min ?? item.minQty) || 0);
+                const normalizedMax = Math.max(normalizedMin, Number(item.max ?? item.maxQty) || Math.max(20, normalizedQty));
+                if (item.qty !== normalizedQty) { item.qty = normalizedQty; changed = true; }
+                if (item.min !== normalizedMin) { item.min = normalizedMin; changed = true; }
+                if (item.max !== normalizedMax) { item.max = normalizedMax; changed = true; }
+                if (item.purchasePriceNet == null) { item.purchasePriceNet = legacyPrice; changed = true; }
+                if (item.purchasePriceGross == null) { item.purchasePriceGross = 0; changed = true; }
+                if (item.markupPercent == null) { item.markupPercent = 0; changed = true; }
+                if (item.salePrice == null) { item.salePrice = Number(item.finalPrice ?? item.lastPrice) || legacyPrice; changed = true; }
+                if (item.lastPrice == null) { item.lastPrice = legacyPrice; changed = true; }
+            });
+            return changed;
         }
 
         function getInventoryCostLine(name, qty) {
@@ -1775,7 +1823,7 @@
             const select = document.getElementById('obj-battery-item-select');
             if (!select) return;
             let html = '<option value="">-- Без батерии --</option>';
-            inventory.filter(i => i.type === 'Консуматив' || i.name.toLowerCase().includes('батерия') || i.name.toLowerCase().includes('батерии')).forEach(item => {
+            inventory.filter(i => isConsumableItem(i)).forEach(item => {
                 html += `<option value="${item.name}">${item.name} (Налични: ${item.qty} бр.)</option>`;
             });
             select.innerHTML = html;
@@ -2156,7 +2204,7 @@
                 }
             });
 
-            const availableItems = inventory.filter(i => (i.type === 'Аромат' || i.type === 'Консуматив' || i.type === undefined) && i.qty > 0);
+            const availableItems = inventory.filter(i => (isAromaItem(i) || isConsumableItem(i)) && Number(i.qty) > 0);
 
             rows.forEach(row => {
                 const sel = row.querySelector('.obj-aroma-select');
@@ -2295,7 +2343,7 @@
                 invItem.qty -= row.qty;
                 totalAmount += row.qty * row.price;
                 cogsBreakdown.push(getInventoryCostLine(invItem.name, row.qty));
-                if (invItem.type === 'Аромат') rawAromas.push({ name:invItem.name, qty:row.qty });
+                if (isAromaItem(invItem)) rawAromas.push({ name:invItem.name, qty:row.qty });
             });
             const cogs = cogsBreakdown.reduce((sum, line) => sum + line.totalNet, 0);
             const cogsVat = cogsBreakdown.reduce((sum, line) => sum + line.vat, 0);
@@ -2309,8 +2357,8 @@
                 date: new Date().toISOString().split('T')[0],
                 aromaName: `Директна продажба: ${itemSummary}`,
                 rawAromas,
-                devicesCount: directSaleCart.filter(row => row.type === 'Дозатор').reduce((sum, row) => sum + row.qty, 0),
-                deviceModel: directSaleCart.filter(row => row.type === 'Дозатор').map(row => row.name).join(', ') || 'Различни артикули',
+                devicesCount: directSaleCart.filter(row => normalizeInventoryType(row.type, row.name) === 'Дозатор').reduce((sum, row) => sum + row.qty, 0),
+                deviceModel: directSaleCart.filter(row => normalizeInventoryType(row.type, row.name) === 'Дозатор').map(row => row.name).join(', ') || 'Различни артикули',
                 priceEUR: totalAmount,
                 cogsEUR: cogs,
                 cogsVatEUR: cogsVat,
@@ -2568,10 +2616,11 @@
         }
 
         function openEditInvModal(id) {
-            const item = inventory.find(i => i.id === id);
+            const item = inventory.find(i => String(i.id) === String(id));
             if (!item) return;
             document.getElementById('edit-inv-id').value = item.id;
             document.getElementById('edit-inv-name').value = item.name;
+            document.getElementById('edit-inv-type').value = normalizeInventoryType(item.type, item.name);
             document.getElementById('edit-inv-qty').value = item.qty;
             document.getElementById('edit-inv-min').value = item.min;
             document.getElementById('edit-inv-max').value = item.max;
@@ -2622,11 +2671,15 @@
         }
 
         function saveInventoryEdit() {
-            const id = parseInt(document.getElementById('edit-inv-id').value);
-            const item = inventory.find(i => i.id === id);
-            if (!item) return;
+            const id = document.getElementById('edit-inv-id').value;
+            const item = inventory.find(i => String(i.id) === String(id));
+            if (!item) {
+                alert('Артикулът не беше намерен. Обновете страницата и опитайте отново.');
+                return;
+            }
 
             item.name = document.getElementById('edit-inv-name').value.trim();
+            item.type = document.getElementById('edit-inv-type').value;
             item.distributorId = parseInt(document.getElementById('edit-inv-dist').value) || 0;
             item.qty = parseInt(document.getElementById('edit-inv-qty').value) || 0;
             item.min = parseInt(document.getElementById('edit-inv-min').value) || 0;
@@ -2871,7 +2924,7 @@
                 return;
             }
 
-            const invDevice = inventory.find(i => i.name === deviceModel && i.type === 'Дозатор');
+            const invDevice = inventory.find(i => i.name === deviceModel && isDeviceItem(i));
             if (!editId && (!invDevice || invDevice.qty < devicesCount)) {
                 alert(`Грешка: Няма достатъчно дозатори "${deviceModel}" в склада! Налични: ${invDevice ? invDevice.qty : 0} бр.`);
                 return;
@@ -2906,6 +2959,10 @@
                     itemsSummaryParts.push(`Аромат: ${aromaName} (${aromaQty} бр.)`);
                 }
             });
+            if (stockError) {
+                alert(stockError);
+                return;
+            }
 
             if (invBattery && !editId) {
                 totalItemsCost += (invBattery.lastPrice || 0) * batteryQty;
@@ -3015,7 +3072,7 @@
                         });
                     }
                     if (o.deviceModel && o.deviceModel !== 'Директна продажба' && o.deviceModel !== 'Стартов пакет') {
-                        let invDev = inventory.find(i => i.name === o.deviceModel && i.type === 'Дозатор');
+                        let invDev = inventory.find(i => i.name === o.deviceModel && isDeviceItem(i));
                         if (invDev) invDev.qty += (o.devicesCount || 1);
                     }
                 }
@@ -3261,7 +3318,7 @@
             container.innerHTML = '';
 
             let aromaStatsMap = {};
-            const aromaNames = new Set(inventory.filter(item => item.type === 'Аромат').map(item => item.name));
+            const aromaNames = new Set(inventory.filter(item => isAromaItem(item)).map(item => item.name));
             sales.forEach(s => {
                 if (s.rawAromas && s.rawAromas.length > 0) {
                     s.rawAromas.forEach(ra => {
@@ -3302,10 +3359,15 @@
         function updateDeviceModelSelects() {
             const devSelect = document.getElementById('obj-device-model-select');
             if (!devSelect) return;
-            const availableDevices = inventory.filter(i => i.type === 'Дозатор');
+            const currentValue = devSelect.value;
+            const availableDevices = inventory.filter(i => isDeviceItem(i));
             let html = '<option value="">-- Изберете модел дозатор --</option>';
-            availableDevices.forEach(d => { html += `<option value="${d.name}">${d.name} (В склада: ${d.qty} бр.)</option>`; });
+            availableDevices.forEach(d => {
+                const qty = Number(d.qty) || 0;
+                html += `<option value="${escapeHtml(d.name)}" ${qty <= 0 ? 'disabled' : ''}>${escapeHtml(d.name)} (${qty > 0 ? `В склада: ${qty} бр.` : 'Няма наличност'})</option>`;
+            });
             devSelect.innerHTML = html;
+            if (availableDevices.some(d => d.name === currentValue && Number(d.qty) > 0)) devSelect.value = currentValue;
         }
 
         function getBusinessSettings() {
@@ -3628,10 +3690,6 @@
                     changed = true;
                 }
             });
-            if (stockError) {
-                alert(stockError);
-                return;
-            }
             if (changed) {
                 persistLocalCache();
                 scheduleCloudSave();
