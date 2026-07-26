@@ -1067,8 +1067,17 @@
         }
 
         function persistLocalCache() {
-            persistLocalCache();
-            scheduleCloudSave();
+            if (!activeTargetUser) return;
+            const k = getUserKeys();
+            localStorage.setItem(k.obj, JSON.stringify(objects));
+            localStorage.setItem(k.sales, JSON.stringify(sales));
+            localStorage.setItem(k.dist, JSON.stringify(distributors));
+            localStorage.setItem(k.inv, JSON.stringify(inventory));
+            localStorage.setItem(k.exp, JSON.stringify(expenses));
+            localStorage.setItem(k.recurringExp, JSON.stringify(recurringExpenses));
+            localStorage.setItem(k.offers, JSON.stringify(offers));
+            localStorage.setItem(k.business, JSON.stringify(businessSettings));
+            localStorage.setItem(k.sentOrders, JSON.stringify(sentOrders));
         }
 
         async function saveCloudStateNow() {
@@ -1111,7 +1120,8 @@
                 setCloudStatus('☁️ Синхронизирано');
             } catch (error) {
                 cloudReady = false;
-                setCloudMessage(`${error.message} Профилът е валиден, но настройката на базата не е завършена.`);
+                console.error(error);
+                setCloudMessage(`Неуспешно зареждане: ${error.message}`);
             }
         }
 
@@ -1305,17 +1315,9 @@
 
         function saveData() {
             if (!activeTargetUser) return;
-            const k = getUserKeys();
-            localStorage.setItem(k.obj, JSON.stringify(objects));
-            localStorage.setItem(k.sales, JSON.stringify(sales));
-            localStorage.setItem(k.dist, JSON.stringify(distributors));
-            localStorage.setItem(k.inv, JSON.stringify(inventory));
-            localStorage.setItem(k.exp, JSON.stringify(expenses));
-            localStorage.setItem(k.recurringExp, JSON.stringify(recurringExpenses));
-            localStorage.setItem(k.offers, JSON.stringify(offers));
-            localStorage.setItem(k.business, JSON.stringify(businessSettings));
-            localStorage.setItem(k.sentOrders, JSON.stringify(sentOrders));
-            renderAll();
+            persistLocalCache();
+            scheduleCloudSave();
+            if (!isRendering) renderAll();
         }
 
         function openSubscriptionPayInfoModal() {
@@ -1725,30 +1727,37 @@
             }
         }
 
+        let isRendering = false;
         function renderAll() {
-            updateDistributorFilterOptions();
-            renderScheduleForDate();
-            renderFourWeeksSchedule();
-            renderDistributors();
-            renderInventory();
-            renderObjects();
-            updateSelectOptions();
-            renderPayments();
-            renderAccounting();
-            renderStats();
-            renderOrdersTab();
-            updateAllAromaSelects();
-            updateDeviceModelSelects();
-            updateDirectSaleItemOptions();
-            updateDirectSaleObjectOptions();
-            renderDirectSaleCart();
-            updateAllStockRowsDistributorSelects();
-            updateBatteryItemSelectOptions();
-            updateSuggestedSubscriptionPrice();
-            setAccountingDefaults();
-            loadBusinessSettingsToForm();
-            updateOfferObjectOptions();
-            renderOffers();
+            if (isRendering) return;
+            isRendering = true;
+            try {
+                updateDistributorFilterOptions();
+                renderScheduleForDate();
+                renderFourWeeksSchedule();
+                renderDistributors();
+                renderInventory();
+                renderObjects();
+                updateSelectOptions();
+                renderPayments();
+                renderAccounting();
+                renderStats();
+                renderOrdersTab();
+                updateAllAromaSelects();
+                updateDeviceModelSelects();
+                updateDirectSaleItemOptions();
+                updateDirectSaleObjectOptions();
+                renderDirectSaleCart();
+                updateAllStockRowsDistributorSelects();
+                updateBatteryItemSelectOptions();
+                updateSuggestedSubscriptionPrice();
+                setAccountingDefaults();
+                loadBusinessSettingsToForm();
+                updateOfferObjectOptions();
+                renderOffers();
+            } finally {
+                isRendering = false;
+            }
         }
 
         function updateBatteryItemSelectOptions() {
@@ -3575,6 +3584,7 @@
 
         function generateRecurringExpensesForMonth(month) {
             if (!month) return;
+            let changed = false;
             recurringExpenses.filter(r => r.active !== false && r.startMonth <= month && (!r.endMonth || r.endMonth >= month)).forEach(r => {
                 const exists = expenses.some(e => e.recurringId === r.id && String(e.date || '').slice(0, 7) === month);
                 if (!exists) {
@@ -3587,10 +3597,13 @@
                         date: `${month}-${String(day).padStart(2, '0')}`, method: r.method,
                         status: 'Очаква плащане', note: r.note || ''
                     });
+                    changed = true;
                 }
             });
-            const k = getUserKeys();
-            localStorage.setItem(k.exp, JSON.stringify(expenses));
+            if (changed) {
+                persistLocalCache();
+                scheduleCloudSave();
+            }
         }
 
         function renderRecurringExpenses() {
