@@ -362,9 +362,8 @@
                     <div class="form-group"><label>Банка (€)</label><input type="number" id="biz-opening-bank" class="form-control" step="0.01" min="0"></div>
                     <div class="form-group"><label>Резерв — месеци</label><input type="number" id="biz-reserve-months" class="form-control" min="1" value="3"></div>
                 </div>
-                <div class="form-row-3">
+                <div class="form-row">
                     <div class="form-group"><label>Труд (€ / час)</label><input type="number" id="biz-labor-rate" class="form-control" step="0.01" min="0" value="10"></div>
-                    <div class="form-group"><label>Транспорт (€ / км)</label><input type="number" id="biz-fuel-km" class="form-control" step="0.01" min="0" value="0.15"></div>
                     <div class="form-group"><label>Целеви марж (%)</label><input type="number" id="biz-target-margin" class="form-control" min="0" max="80" value="20"></div>
                 </div>
                 <div class="form-row">
@@ -372,6 +371,52 @@
                     <div class="form-group"><label>Средно време за посещение (минути)</label><input type="number" id="biz-default-minutes" class="form-control" min="1" value="20"></div>
                 </div>
                 <button type="button" class="btn btn-success" onclick="saveBusinessSettings()">💾 Запази настройките</button>
+            </div>
+
+            <div class="card">
+                <h2>🚗 Автопарк, гориво и дневни километри</h2>
+                <label style="display:flex;align-items:center;gap:0.6rem;font-weight:800;margin-bottom:1rem;color:var(--primary);">
+                    <input type="checkbox" id="fleet-enabled" style="width:20px;height:20px;" onchange="toggleFleetFields()">
+                    Активирай данните от автопарка в изчисленията
+                </label>
+                <p id="fleet-disabled-note" style="background:#fef3c7;color:#92400e;padding:0.75rem;border-radius:8px;margin-bottom:1rem;">
+                    Автопаркът е изключен. Разходът за гориво и автомобил в цената на посещенията е 0.00 €.
+                </p>
+                <div id="fleet-fields">
+                    <div class="form-row-3">
+                        <div class="form-group"><label>Марка и модел</label><input type="text" id="fleet-model" class="form-control" placeholder="напр. Toyota Corolla"></div>
+                        <div class="form-group"><label>Вид автомобил</label><select id="fleet-vehicle-type" class="form-control"><option>Лек автомобил</option><option>Товарен автомобил</option><option>Ван</option><option>Друг</option></select></div>
+                        <div class="form-group"><label>Гориво</label><select id="fleet-fuel-type" class="form-control"><option>Бензин</option><option>Дизел</option><option>Газ</option><option>Хибрид</option><option>Електричество</option></select></div>
+                    </div>
+                    <div class="form-group">
+                        <label>Зададен среден разход (л/100 км)</label>
+                        <input type="number" id="fleet-average-consumption" class="form-control" min="0" step="0.1" value="7">
+                    </div>
+                    <button type="button" class="btn btn-success" onclick="saveFleetSettings()">💾 Запази автомобила и настройките</button>
+
+                    <div class="form-row" style="margin-top:1rem;">
+                        <div style="background:#f8fafc;border:1px solid var(--border);padding:0.85rem;border-radius:10px;">
+                            <h3 style="margin-bottom:0.7rem;">🛣️ Добави дневни километри</h3>
+                            <div class="form-group"><label>Дата</label><input type="date" id="fleet-km-date" class="form-control"></div>
+                            <div class="form-group"><label>Изминати километри</label><input type="number" id="fleet-km-value" class="form-control" min="0" step="0.1"></div>
+                            <button type="button" class="btn btn-secondary" onclick="addFleetMileage()">Добави километри</button>
+                        </div>
+                        <div style="background:#f8fafc;border:1px solid var(--border);padding:0.85rem;border-radius:10px;">
+                            <h3 style="margin-bottom:0.7rem;">⛽ Добави зареждане</h3>
+                            <div class="form-group"><label>Дата</label><input type="date" id="fleet-fuel-date" class="form-control"></div>
+                            <div class="form-row">
+                                <div class="form-group"><label>Литри</label><input type="number" id="fleet-fuel-liters" class="form-control" min="0" step="0.01"></div>
+                                <div class="form-group"><label>Цена за литър (€)</label><input type="number" id="fleet-fuel-unit-price" class="form-control" min="0" step="0.001"></div>
+                            </div>
+                            <button type="button" class="btn btn-secondary" onclick="addFleetFuelLog()">Добави зареждане</button>
+                        </div>
+                    </div>
+                    <div id="fleet-summary" style="margin-top:1rem;"></div>
+                    <div class="accounting-columns" style="margin-top:1rem;">
+                        <div class="accounting-column"><h3>Последни километри</h3><div id="fleet-mileage-list"></div></div>
+                        <div class="accounting-column"><h3>Последни зареждания</h3><div id="fleet-fuel-list"></div></div>
+                    </div>
+                </div>
             </div>
 
             <div class="card">
@@ -1054,7 +1099,7 @@
         }
 
         function serializeCloudState() {
-            return { distributors, objects, sales, inventory, expenses, sentOrders, recurringExpenses, offers, businessSettings, publisher:getPublisherData(), schemaVersion:83 };
+            return { distributors, objects, sales, inventory, expenses, sentOrders, recurringExpenses, offers, businessSettings, publisher:getPublisherData(), schemaVersion:84 };
         }
 
         function applyCloudState(data) {
@@ -1367,10 +1412,23 @@
             };
         }
 
+        function getSubscriptionCostLine(name, qty) {
+            const line = getInventoryCostLine(name, qty);
+            const item = inventory.find(i => i.name === name);
+            if (!isDeviceItem(item)) {
+                const vatRate = (Number(getPublisherData().vatRate ?? 20) || 0) / 100;
+                const grossUnit = Number(item?.purchasePriceGross) || line.unitNet * (1 + vatRate);
+                line.vat = Math.max(0, grossUnit - line.unitNet) * line.qty;
+                line.unitNet = grossUnit;
+                line.totalNet = grossUnit * line.qty;
+            }
+            return line;
+        }
+
         function buildServiceCostBreakdown(object, includeDevices) {
-            const lines = (object.rawAromas || []).map(ra => getInventoryCostLine(ra.name, ra.qty));
+            const lines = (object.rawAromas || []).map(ra => getSubscriptionCostLine(ra.name, ra.qty));
             if (includeDevices && object.deviceModel && object.devicesCount) {
-                lines.push(getInventoryCostLine(object.deviceModel, object.devicesCount));
+                lines.push(getSubscriptionCostLine(object.deviceModel, object.devicesCount));
             }
             return lines;
         }
@@ -1841,6 +1899,7 @@
                     ['абонаментна цена', updateSuggestedSubscriptionPrice],
                     ['счетоводни настройки', setAccountingDefaults],
                     ['бизнес настройки', loadBusinessSettingsToForm],
+                    ['автопарк', renderFleet],
                     ['клиенти за оферта', updateOfferObjectOptions],
                     ['оферти', renderOffers]
                 ];
@@ -3410,28 +3469,38 @@
         }
 
         function getBusinessSettings() {
+            const fleet = businessSettings.fleet || {};
             return {
                 openingCash: Number(businessSettings.openingCash) || 0,
                 openingBank: Number(businessSettings.openingBank) || 0,
                 reserveMonths: Number(businessSettings.reserveMonths) || 3,
                 laborRate: Number(businessSettings.laborRate) || 10,
-                fuelPerKm: Number(businessSettings.fuelPerKm) || 0.15,
                 targetMargin: Number(businessSettings.targetMargin) || 20,
                 defaultKm: Number(businessSettings.defaultKm) || 8,
-                defaultMinutes: Number(businessSettings.defaultMinutes) || 20
+                defaultMinutes: Number(businessSettings.defaultMinutes) || 20,
+                fleet: {
+                    enabled: fleet.enabled === true,
+                    model: fleet.model || '',
+                    vehicleType: fleet.vehicleType || 'Лек автомобил',
+                    fuelType: fleet.fuelType || 'Бензин',
+                    averageConsumption: Math.max(0, Number(fleet.averageConsumption) || 0),
+                    mileageLogs: Array.isArray(fleet.mileageLogs) ? fleet.mileageLogs : [],
+                    fuelLogs: Array.isArray(fleet.fuelLogs) ? fleet.fuelLogs : []
+                }
             };
         }
 
         function saveBusinessSettings() {
+            const currentFleet = getBusinessSettings().fleet;
             businessSettings = {
                 openingCash: parseFloat(document.getElementById('biz-opening-cash').value) || 0,
                 openingBank: parseFloat(document.getElementById('biz-opening-bank').value) || 0,
                 reserveMonths: parseInt(document.getElementById('biz-reserve-months').value) || 3,
                 laborRate: parseFloat(document.getElementById('biz-labor-rate').value) || 0,
-                fuelPerKm: parseFloat(document.getElementById('biz-fuel-km').value) || 0,
                 targetMargin: parseFloat(document.getElementById('biz-target-margin').value) || 0,
                 defaultKm: parseFloat(document.getElementById('biz-default-km').value) || 0,
-                defaultMinutes: parseInt(document.getElementById('biz-default-minutes').value) || 20
+                defaultMinutes: parseInt(document.getElementById('biz-default-minutes').value) || 20,
+                fleet: currentFleet
             };
             saveData();
             alert('Финансовите настройки са запазени.');
@@ -3439,22 +3508,142 @@
 
         function loadBusinessSettingsToForm() {
             const s = getBusinessSettings();
-            const map = { 'biz-opening-cash':s.openingCash, 'biz-opening-bank':s.openingBank, 'biz-reserve-months':s.reserveMonths, 'biz-labor-rate':s.laborRate, 'biz-fuel-km':s.fuelPerKm, 'biz-target-margin':s.targetMargin, 'biz-default-km':s.defaultKm, 'biz-default-minutes':s.defaultMinutes };
+            const map = { 'biz-opening-cash':s.openingCash, 'biz-opening-bank':s.openingBank, 'biz-reserve-months':s.reserveMonths, 'biz-labor-rate':s.laborRate, 'biz-target-margin':s.targetMargin, 'biz-default-km':s.defaultKm, 'biz-default-minutes':s.defaultMinutes };
             Object.entries(map).forEach(([id,val]) => { const el=document.getElementById(id); if(el) el.value=val; });
+        }
+
+        function getFleetMetrics() {
+            const fleet = getBusinessSettings().fleet;
+            const totalKm = fleet.mileageLogs.reduce((sum, row) => sum + (Number(row.km) || 0), 0);
+            const totalLiters = fleet.fuelLogs.reduce((sum, row) => sum + (Number(row.liters) || 0), 0);
+            const totalFuelCost = fleet.fuelLogs.reduce((sum, row) => sum + (Number(row.liters) || 0) * (Number(row.unitPrice) || 0), 0);
+            const averageFuelPrice = totalLiters > 0 ? totalFuelCost / totalLiters : 0;
+            const calculatedLitersUsed = totalKm * fleet.averageConsumption / 100;
+            const calculatedFuelCost = calculatedLitersUsed * averageFuelPrice;
+            const costPerKm = fleet.enabled && fleet.averageConsumption > 0 && averageFuelPrice > 0
+                ? fleet.averageConsumption / 100 * averageFuelPrice : 0;
+            return { ...fleet, totalKm, totalLiters, totalFuelCost, averageFuelPrice, calculatedLitersUsed, calculatedFuelCost, costPerKm };
+        }
+
+        function saveFleetSettings() {
+            const old = getBusinessSettings().fleet;
+            businessSettings.fleet = {
+                ...old,
+                enabled: document.getElementById('fleet-enabled').checked,
+                model: document.getElementById('fleet-model').value.trim(),
+                vehicleType: document.getElementById('fleet-vehicle-type').value,
+                fuelType: document.getElementById('fleet-fuel-type').value,
+                averageConsumption: parseFloat(document.getElementById('fleet-average-consumption').value) || 0
+            };
+            saveData();
+            alert(businessSettings.fleet.enabled ? 'Автопаркът е активиран и участва в изчисленията.' : 'Автопаркът е изключен. Транспортният разход е 0.00 €.');
+        }
+
+        function toggleFleetFields() {
+            const enabled = document.getElementById('fleet-enabled')?.checked === true;
+            const note = document.getElementById('fleet-disabled-note');
+            if (note) note.style.display = enabled ? 'none' : 'block';
+        }
+
+        function addFleetMileage() {
+            const date = document.getElementById('fleet-km-date').value;
+            const km = parseFloat(document.getElementById('fleet-km-value').value) || 0;
+            if (!date || km <= 0) { alert('Въведете дата и изминати километри.'); return; }
+            const fleet = getBusinessSettings().fleet;
+            fleet.mileageLogs.unshift({ id:Date.now(), date, km });
+            businessSettings.fleet = fleet;
+            saveData();
+            document.getElementById('fleet-km-value').value = '';
+        }
+
+        function addFleetFuelLog() {
+            const date = document.getElementById('fleet-fuel-date').value;
+            const liters = parseFloat(document.getElementById('fleet-fuel-liters').value) || 0;
+            const unitPrice = parseFloat(document.getElementById('fleet-fuel-unit-price').value) || 0;
+            if (!date || liters <= 0 || unitPrice <= 0) { alert('Въведете дата, литри и цена за литър.'); return; }
+            const fleet = getBusinessSettings().fleet;
+            const logId = Date.now();
+            fleet.fuelLogs.unshift({ id:logId, date, liters, unitPrice });
+            businessSettings.fleet = fleet;
+            const grossAmount = liters * unitPrice;
+            const vatRate = (Number(getPublisherData().vatRate ?? 20) || 0) / 100;
+            const netAmount = vatRate > 0 ? grossAmount / (1 + vatRate) : grossAmount;
+            if (fleet.enabled) expenses.unshift({
+                id: logId + 1,
+                fleetLogId: logId,
+                title: `Гориво за ${fleet.model || 'автомобил'} — ${liters.toFixed(2)} л`,
+                category: 'Гориво',
+                netAmount,
+                vatAmount: grossAmount - netAmount,
+                grossAmount,
+                date,
+                method: 'Карта',
+                status: 'Платено',
+                note: `Цена за литър: ${unitPrice.toFixed(3)} €`
+            });
+            saveData();
+            document.getElementById('fleet-fuel-liters').value = '';
+            document.getElementById('fleet-fuel-unit-price').value = '';
+        }
+
+        function deleteFleetLog(kind, id) {
+            const fleet = getBusinessSettings().fleet;
+            const key = kind === 'km' ? 'mileageLogs' : 'fuelLogs';
+            fleet[key] = fleet[key].filter(row => String(row.id) !== String(id));
+            if (kind === 'fuel') expenses = expenses.filter(row => String(row.fleetLogId) !== String(id));
+            businessSettings.fleet = fleet;
+            saveData();
+        }
+
+        function renderFleet() {
+            const enabledEl = document.getElementById('fleet-enabled');
+            if (!enabledEl) return;
+            const m = getFleetMetrics();
+            enabledEl.checked = m.enabled;
+            document.getElementById('fleet-model').value = m.model;
+            document.getElementById('fleet-vehicle-type').value = m.vehicleType;
+            document.getElementById('fleet-fuel-type').value = m.fuelType;
+            document.getElementById('fleet-average-consumption').value = m.averageConsumption || '';
+            const today = localDateString(new Date());
+            if (!document.getElementById('fleet-km-date').value) document.getElementById('fleet-km-date').value = today;
+            if (!document.getElementById('fleet-fuel-date').value) document.getElementById('fleet-fuel-date').value = today;
+            toggleFleetFields();
+            document.getElementById('fleet-summary').innerHTML = `
+                <div class="finance-grid">
+                    <div class="finance-card"><label>Общо километри</label><div class="val">${m.totalKm.toFixed(1)} км</div></div>
+                    <div class="finance-card"><label>Общо заредено</label><div class="val">${m.totalLiters.toFixed(2)} л</div></div>
+                    <div class="finance-card"><label>Платено за гориво</label><div class="val">${m.totalFuelCost.toFixed(2)} €</div></div>
+                    <div class="finance-card"><label>Средна цена</label><div class="val">${m.averageFuelPrice.toFixed(3)} €/л</div></div>
+                    <div class="finance-card"><label>Изчислено изгорено</label><div class="val">${m.calculatedLitersUsed.toFixed(2)} л</div></div>
+                    <div class="finance-card"><label>Цена на километър</label><div class="val">${m.enabled ? m.costPerKm.toFixed(3) : '0.000'} €</div></div>
+                </div>`;
+            document.getElementById('fleet-mileage-list').innerHTML = m.mileageLogs.length ? m.mileageLogs.slice(0,20).map(row =>
+                `<div class="list-item"><b>${row.date}</b> — ${Number(row.km).toFixed(1)} км <button class="btn btn-sm btn-danger" style="float:right" onclick="deleteFleetLog('km',${row.id})">🗑️</button></div>`).join('') : '<p style="color:var(--text-muted)">Няма записи.</p>';
+            document.getElementById('fleet-fuel-list').innerHTML = m.fuelLogs.length ? m.fuelLogs.slice(0,20).map(row =>
+                `<div class="list-item"><b>${row.date}</b> — ${Number(row.liters).toFixed(2)} л × ${Number(row.unitPrice).toFixed(3)} € = ${(Number(row.liters)*Number(row.unitPrice)).toFixed(2)} € <button class="btn btn-sm btn-danger" style="float:right" onclick="deleteFleetLog('fuel',${row.id})">🗑️</button></div>`).join('') : '<p style="color:var(--text-muted)">Няма записи.</p>';
         }
 
         function calculateMinimumPriceData(object) {
             const s = getBusinessSettings();
-            const consumables = (object.rawAromas || []).reduce((sum, ra) => sum + getInventoryCostLine(ra.name, ra.qty).totalNet, 0);
-            const device = getInventoryCostLine(object.deviceModel, object.devicesCount || 1).totalNet / 6;
+            const vatRate = (Number(getPublisherData().vatRate ?? 20) || 0) / 100;
+            const consumables = (object.rawAromas || []).reduce((sum, ra) => {
+                const item = inventory.find(i => i.name === ra.name);
+                const net = Number(item?.purchasePriceNet ?? item?.lastPrice) || 0;
+                const gross = Number(item?.purchasePriceGross) || net * (1 + vatRate);
+                return sum + gross * (Number(ra.qty) || 0);
+            }, 0);
+            const device = object.initialCostsRecorded === true ? 0 : getInventoryCostLine(object.deviceModel, object.devicesCount || 1).totalNet;
             const km = Number(object.distanceKm ?? s.defaultKm);
             const minutes = Number(object.visitMinutes ?? s.defaultMinutes);
-            const visit = km * s.fuelPerKm + (minutes / 60) * s.laborRate;
+            const fleet = getFleetMetrics();
+            const transport = fleet.enabled ? km * fleet.costPerKm : 0;
+            const labor = (minutes / 60) * s.laborRate;
+            const visit = transport + labor;
             const fixedMonthly = recurringExpenses.filter(r => r.active !== false).reduce((sum,r) => sum + Number(r.netAmount || r.grossAmount || 0), 0);
             const fixedShare = objects.length ? fixedMonthly / Math.max(1, objects.length) : 0;
             const monthlyCost = consumables + device + visit + fixedShare;
             const margin = Math.min(80, Math.max(0, s.targetMargin)) / 100;
-            return { consumables, device, visit, fixedShare, monthlyCost, minimumPrice: monthlyCost / Math.max(0.2, 1 - margin) };
+            return { consumables, device, transport, labor, visit, fixedShare, monthlyCost, minimumPrice: monthlyCost / Math.max(0.2, 1 - margin) };
         }
 
         function renderCustomerProfitability() {
@@ -3466,7 +3655,7 @@
                 return `<div class="list-item" style="border-left:5px solid ${safe?'var(--success)':'var(--danger)'};">
                     <div class="list-item-header"><span>${safe?'✅':'⚠️'} ${escapeHtml(o.name)}</span><span>${profit.toFixed(2)} € / мес.</span></div>
                     <div class="list-item-sub">Цена: ${Number(o.subscriptionFee).toFixed(2)} € | Минимална безопасна: ${d.minimumPrice.toFixed(2)} € | Марж: ${margin.toFixed(1)}%</div>
-                    <div class="list-item-sub">Аромати/консумативи: ${d.consumables.toFixed(2)} € | Дозатори за 6 м.: ${d.device.toFixed(2)} € | Посещение: ${d.visit.toFixed(2)} € | Общи разходи: ${d.fixedShare.toFixed(2)} €</div>
+                    <div class="list-item-sub">Аромати/консумативи с ДДС: ${d.consumables.toFixed(2)} € | ${o.initialCostsRecorded === true ? 'Дозаторът вече е отчетен' : `Първоначални дозатори без ДДС: ${d.device.toFixed(2)} €`} | Труд: ${d.labor.toFixed(2)} € | Гориво/транспорт: ${d.transport.toFixed(2)} € | Общи разходи: ${d.fixedShare.toFixed(2)} €</div>
                 </div>`;
             }).join('');
         }
@@ -3506,7 +3695,11 @@
                 { name: 'Премиум', devices: 5, fee: 98, sqm: 180 }
             ];
 
-            businessSettings = { openingCash: 1000, openingBank: 6500, reserveMonths: 3, laborRate: 10, fuelPerKm: 0.15, targetMargin: 20, defaultKm: 8, defaultMinutes: 20 };
+            businessSettings = {
+                openingCash: 1000, openingBank: 6500, reserveMonths: 3,
+                laborRate: 10, targetMargin: 20, defaultKm: 8, defaultMinutes: 20,
+                fleet: { enabled:false, model:'', vehicleType:'Лек автомобил', fuelType:'Бензин', averageConsumption:7, mileageLogs:[], fuelLogs:[] }
+            };
             distributors = [{ id: Date.now(), name: 'Демо Дистрибутор', company: 'Арома Снабдяване ЕООД', phone: '0888 000 111', email: 'demo@supplier.example' }];
             const distributorId = distributors[0].id;
             inventory = [
