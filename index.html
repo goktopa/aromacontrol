@@ -824,11 +824,6 @@
                     </label>
                 </div>
             </div>
-            <div class="card" style="border:1px solid #93c5fd;background:#eff6ff;">
-                <h2 style="color:#1d4ed8;">🧪 Демонстрационна база</h2>
-                <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.8rem;">Зарежда 4–5 примерни клиента във всеки работен ден за следващите 30 дни, различни планове, доставчик и достатъчен склад.</p>
-                <button type="button" class="btn" onclick="loadDemoBusinessData()">Зареди демонстрационните данни</button>
-            </div>
         </div>
 
     </div>
@@ -3722,73 +3717,6 @@
             const fixed=recurringExpenses.filter(r=>r.active!==false).reduce((sum,r)=>sum+Number(r.grossAmount||0),0);
             const required=fixed*s.reserveMonths; const box=document.getElementById('reserve-warning-box');
             box.innerHTML=currentCash>=required?`<div style="background:#dcfce7;color:#166534;padding:0.75rem;border-radius:8px;">✅ Резервът е достатъчен: ${currentCash.toFixed(2)} € при цел ${required.toFixed(2)} €.</div>`:`<div style="background:#fee2e2;color:#991b1b;padding:0.75rem;border-radius:8px;">⚠️ Недостатъчен резерв: налични ${currentCash.toFixed(2)} €, препоръчана цел ${required.toFixed(2)} €.</div>`;
-        }
-
-        function loadDemoBusinessData(autoLoad = false) {
-            if (!autoLoad && (objects.length || inventory.length) && !confirm('Това ще замени текущите обекти, склад, продажби и разходи с демонстрационни данни. Продължаваме ли?')) return;
-
-            const today = new Date();
-            today.setHours(12, 0, 0, 0);
-            const end = new Date(today);
-            end.setDate(end.getDate() + 30);
-            const aromaNames = ['Бял мускус', 'Праскова', 'Зелен чай', 'Ванилия', 'Океан'];
-            const cityNames = ['София', 'Пловдив', 'Варна', 'Бургас', 'Стара Загора'];
-            const businessNames = ['Аптека', 'Хотел', 'Ресторант', 'Салон', 'Медицински център', 'Шоурум', 'Офис', 'Фитнес'];
-            const plans = [
-                { name: 'Старт', devices: 1, fee: 24, sqm: 35 },
-                { name: 'Малък', devices: 2, fee: 42, sqm: 65 },
-                { name: 'Стандарт', devices: 3, fee: 60, sqm: 95 },
-                { name: 'Бизнес', devices: 4, fee: 79, sqm: 130 },
-                { name: 'Премиум', devices: 5, fee: 98, sqm: 180 }
-            ];
-
-            businessSettings = {
-                openingCash: 1000, openingBank: 6500, reserveMonths: 3,
-                laborRate: 10, targetMargin: 20, defaultKm: 8, defaultMinutes: 20,
-                fleet: { enabled:false, model:'', vehicleType:'Лек автомобил', fuelType:'Бензин', averageConsumption:7, mileageLogs:[], fuelLogs:[] }
-            };
-            distributors = [{ id: Date.now(), name: 'Демо Дистрибутор', company: 'Арома Снабдяване ЕООД', phone: '0888 000 111', email: 'demo@supplier.example' }];
-            const distributorId = distributors[0].id;
-            inventory = [
-                { id: Date.now()+1, name:'Aroma Pro Smart', type:'Дозатор', qty:650, minQty:80, distributorId, purchasePriceNet:11, purchasePriceGross:13.20, markupPercent:63.64, finalPrice:18 },
-                ...aromaNames.map((name,i) => ({ id:Date.now()+10+i, name, type:'Аромат', qty:650, minQty:100, distributorId, purchasePriceNet:3, purchasePriceGross:3.60, markupPercent:100, finalPrice:6 })),
-                { id:Date.now()+30, name:'Батерия AA', type:'Консуматив', qty:3000, minQty:500, distributorId, purchasePriceNet:0.25, purchasePriceGross:0.30, markupPercent:100, finalPrice:0.50 }
-            ];
-            recurringExpenses = [
-                { id:Date.now()+40, name:'Счетоводно обслужване', category:'Счетоводно обслужване', netAmount:150, vatAmount:30, grossAmount:180, day:5, paymentMethod:'Банков превод', active:true },
-                { id:Date.now()+41, name:'Интернет и телефон', category:'Интернет и телефон', netAmount:40, vatAmount:8, grossAmount:48, day:10, paymentMethod:'Банков превод', active:true },
-                { id:Date.now()+42, name:'Софтуер и облачни услуги', category:'Софтуер и абонаменти', netAmount:80, vatAmount:16, grossAmount:96, day:15, paymentMethod:'Банков превод', active:true }
-            ];
-            objects = [];
-            let counter = 1;
-            for (let date = new Date(today); date <= end; date.setDate(date.getDate()+1)) {
-                if (date.getDay() === 0 || date.getDay() === 6) continue;
-                const visits = counter % 2 ? 4 : 5;
-                for (let n = 0; n < visits; n++) {
-                    const plan = plans[(counter+n) % plans.length];
-                    const aroma = aromaNames[(counter+n) % aromaNames.length];
-                    const city = cityNames[(counter+n) % cityNames.length];
-                    const business = businessNames[(counter+n) % businessNames.length];
-                    const id = Date.now() + 1000 + counter * 10 + n;
-                    objects.push({
-                        id, name:`${business} ${counter}-${n+1}`, clientName:`Демо клиент ${counter}-${n+1}`,
-                        phone:`0888 ${String(100000 + counter*10+n).slice(-6)}`, email:`client${counter}-${n+1}@example.com`,
-                        address:`гр. ${city}, ул. Демо ${counter}`, city, sqm:plan.sqm, devicesCount:plan.devices,
-                        deviceModel:'Aroma Pro Smart', rawAromas:[{name:aroma, qty:plan.devices}],
-                        batteryItem:(counter+n)%3===0?'Батерия AA':'', batteryQty:(counter+n)%3===0?plan.devices*2:0,
-                        subscriptionPlan:plan.name, subscriptionFee:plan.fee, nextDate:localDateString(date),
-                        distanceKm:4+((counter+n)%12), visitMinutes:15+((counter+n)%4)*5,
-                        initialCostsRecorded:false, notes:'Фиктивен демонстрационен обект'
-                    });
-                }
-                counter++;
-            }
-            sales = [];
-            expenses = [];
-            offers = [];
-            sentOrders = [];
-            saveData();
-            if (!autoLoad) alert(`Заредени са ${objects.length} фиктивни клиента/посещения за следващите 30 дни и склад, който покрива нуждите им.`);
         }
 
         function renderAccounting() {
