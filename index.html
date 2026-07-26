@@ -1099,7 +1099,7 @@
         }
 
         function serializeCloudState() {
-            return { distributors, objects, sales, inventory, expenses, sentOrders, recurringExpenses, offers, businessSettings, publisher:getPublisherData(), schemaVersion:84 };
+            return { distributors, objects, sales, inventory, expenses, sentOrders, recurringExpenses, offers, businessSettings, publisher:getPublisherData(), schemaVersion:85 };
         }
 
         function applyCloudState(data) {
@@ -1398,6 +1398,24 @@
                 if (item.salePrice == null) { item.salePrice = Number(item.finalPrice ?? item.lastPrice) || legacyPrice; changed = true; }
                 if (item.lastPrice == null) { item.lastPrice = legacyPrice; changed = true; }
             });
+            objects.forEach(object => {
+                const recurring = [];
+                const initial = Array.isArray(object.initialConsumables) ? [...object.initialConsumables] : [];
+                (object.rawAromas || []).forEach(row => {
+                    const item = inventory.find(i => i.name === row.name);
+                    if (isConsumableItem(item)) {
+                        if (!initial.some(x => x.name === row.name && Number(x.qty) === Number(row.qty))) initial.push(row);
+                        changed = true;
+                    } else {
+                        recurring.push(row);
+                    }
+                });
+                if (recurring.length !== (object.rawAromas || []).length) object.rawAromas = recurring;
+                if (initial.length && JSON.stringify(initial) !== JSON.stringify(object.initialConsumables || [])) {
+                    object.initialConsumables = initial;
+                    changed = true;
+                }
+            });
             return changed;
         }
 
@@ -1427,6 +1445,9 @@
 
         function buildServiceCostBreakdown(object, includeDevices) {
             const lines = (object.rawAromas || []).map(ra => getSubscriptionCostLine(ra.name, ra.qty));
+            if (includeDevices) {
+                (object.initialConsumables || []).forEach(row => lines.push(getSubscriptionCostLine(row.name, row.qty)));
+            }
             if (includeDevices && object.deviceModel && object.devicesCount) {
                 lines.push(getSubscriptionCostLine(object.deviceModel, object.devicesCount));
             }
@@ -3065,7 +3086,6 @@
             if (invBattery && !editId) {
                 totalItemsCost += (invBattery.lastPrice || 0) * batteryQty;
                 itemsSummaryParts.push(`Батерия: ${invBattery.name} (${batteryQty} бр.)`);
-                rawAromas.push({ name: invBattery.name, qty: batteryQty });
             }
 
             if (invDevice && !editId) {
@@ -3096,6 +3116,7 @@
                     const item = inventory.find(i => i.name === ra.name);
                     if (item) item.qty -= ra.qty;
                 });
+                if (invBattery) invBattery.qty -= batteryQty;
                 if (invDevice) invDevice.qty -= devicesCount;
             }
 
@@ -3116,6 +3137,8 @@
                     name, city, address, sqm, type, contact, deviceModel, devicesCount, distanceKm, visitMinutes,
                     subscriptionFee, firstDate, nextDate: firstDate,
                     aromas: itemsSummaryParts, rawAromas, note: 'Стартов пакет',
+                    initialConsumables: invBattery && batteryQty > 0 ? [{ name:invBattery.name, qty:batteryQty }] : [],
+                    batteryItem: batteryItemName, batteryQty,
                     invoiceData, servicesSinceBatteryChange: 1, batteryRequired,
                     initialCostsRecorded: false
                 });
@@ -3167,6 +3190,12 @@
                         o.rawAromas.forEach(ra => {
                             let invItem = inventory.find(i => i.name === ra.name);
                             if (invItem) invItem.qty += ra.qty;
+                        });
+                    }
+                    if (o.initialConsumables) {
+                        o.initialConsumables.forEach(row => {
+                            const invItem = inventory.find(i => i.name === row.name);
+                            if (invItem) invItem.qty += Number(row.qty) || 0;
                         });
                     }
                     if (o.deviceModel && o.deviceModel !== 'Директна продажба' && o.deviceModel !== 'Стартов пакет') {
@@ -3626,12 +3655,14 @@
         function calculateMinimumPriceData(object) {
             const s = getBusinessSettings();
             const vatRate = (Number(getPublisherData().vatRate ?? 20) || 0) / 100;
-            const consumables = (object.rawAromas || []).reduce((sum, ra) => {
+            const grossCost = rows => (rows || []).reduce((sum, ra) => {
                 const item = inventory.find(i => i.name === ra.name);
                 const net = Number(item?.purchasePriceNet ?? item?.lastPrice) || 0;
                 const gross = Number(item?.purchasePriceGross) || net * (1 + vatRate);
                 return sum + gross * (Number(ra.qty) || 0);
             }, 0);
+            const consumables = grossCost(object.rawAromas);
+            const initialConsumables = object.initialCostsRecorded === true ? 0 : grossCost(object.initialConsumables);
             const device = object.initialCostsRecorded === true ? 0 : getInventoryCostLine(object.deviceModel, object.devicesCount || 1).totalNet;
             const km = Number(object.distanceKm ?? s.defaultKm);
             const minutes = Number(object.visitMinutes ?? s.defaultMinutes);
@@ -3641,9 +3672,17 @@
             const visit = transport + labor;
             const fixedMonthly = recurringExpenses.filter(r => r.active !== false).reduce((sum,r) => sum + Number(r.netAmount || r.grossAmount || 0), 0);
             const fixedShare = objects.length ? fixedMonthly / Math.max(1, objects.length) : 0;
-            const monthlyCost = consumables + device + visit + fixedShare;
+            const ongoingMonthlyCost = consumables + visit + fixedShare;
+            const initialExtraCost = device + initialConsumables;
+            const monthlyCost = ongoingMonthlyCost + initialExtraCost;
+            const contractMonths = 6;
+            const sixMonthCost = ongoingMonthlyCost * contractMonths + initialExtraCost;
             const margin = Math.min(80, Math.max(0, s.targetMargin)) / 100;
-            return { consumables, device, transport, labor, visit, fixedShare, monthlyCost, minimumPrice: monthlyCost / Math.max(0.2, 1 - margin) };
+            const minimumPrice = (sixMonthCost / contractMonths) / Math.max(0.2, 1 - margin);
+            return {
+                consumables, initialConsumables, device, transport, labor, visit, fixedShare,
+                ongoingMonthlyCost, initialExtraCost, monthlyCost, sixMonthCost, contractMonths, minimumPrice
+            };
         }
 
         function renderCustomerProfitability() {
@@ -3651,11 +3690,19 @@
             if (!el) return;
             if (!objects.length) { el.innerHTML='<p style="color:var(--text-muted);">Няма обекти.</p>'; return; }
             el.innerHTML = objects.map(o => {
-                const d=calculateMinimumPriceData(o); const profit=Number(o.subscriptionFee)-d.monthlyCost; const margin=o.subscriptionFee>0?profit/o.subscriptionFee*100:0; const safe=o.subscriptionFee+0.001>=d.minimumPrice;
+                const d=calculateMinimumPriceData(o);
+                const fee=Number(o.subscriptionFee) || 0;
+                const firstMonthProfit=fee-d.monthlyCost;
+                const ongoingProfit=fee-d.ongoingMonthlyCost;
+                const contractRevenue=fee*d.contractMonths;
+                const contractProfit=contractRevenue-d.sixMonthCost;
+                const margin=contractRevenue>0?contractProfit/contractRevenue*100:0;
+                const safe=fee+0.001>=d.minimumPrice;
                 return `<div class="list-item" style="border-left:5px solid ${safe?'var(--success)':'var(--danger)'};">
-                    <div class="list-item-header"><span>${safe?'✅':'⚠️'} ${escapeHtml(o.name)}</span><span>${profit.toFixed(2)} € / мес.</span></div>
-                    <div class="list-item-sub">Цена: ${Number(o.subscriptionFee).toFixed(2)} € | Минимална безопасна: ${d.minimumPrice.toFixed(2)} € | Марж: ${margin.toFixed(1)}%</div>
-                    <div class="list-item-sub">Аромати/консумативи с ДДС: ${d.consumables.toFixed(2)} € | ${o.initialCostsRecorded === true ? 'Дозаторът вече е отчетен' : `Първоначални дозатори без ДДС: ${d.device.toFixed(2)} €`} | Труд: ${d.labor.toFixed(2)} € | Гориво/транспорт: ${d.transport.toFixed(2)} € | Общи разходи: ${d.fixedShare.toFixed(2)} €</div>
+                    <div class="list-item-header"><span>${safe?'✅':'⚠️'} ${escapeHtml(o.name)}</span><span>${contractProfit.toFixed(2)} € печалба за 6 м.</span></div>
+                    <div class="list-item-sub">Абонамент: ${fee.toFixed(2)} €/мес. | Минимална безопасна месечна цена за 6 м.: ${d.minimumPrice.toFixed(2)} € | Марж за договора: ${margin.toFixed(1)}%</div>
+                    <div class="list-item-sub"><b>Първи месец:</b> ${firstMonthProfit.toFixed(2)} € | <b>Всеки следващ месец:</b> ${ongoingProfit.toFixed(2)} € | <b>Общо приходи:</b> ${contractRevenue.toFixed(2)} € | <b>Общо разходи:</b> ${d.sixMonthCost.toFixed(2)} €</div>
+                    <div class="list-item-sub">Месечни аромати с ДДС: ${d.consumables.toFixed(2)} € | ${o.initialCostsRecorded === true ? 'Първоначалните разходи вече са отчетени' : `Еднократни консумативи: ${d.initialConsumables.toFixed(2)} € | Първоначални дозатори без ДДС: ${d.device.toFixed(2)} €`} | Труд: ${d.labor.toFixed(2)} € | Гориво/транспорт: ${d.transport.toFixed(2)} € | Общи разходи: ${d.fixedShare.toFixed(2)} €</div>
                 </div>`;
             }).join('');
         }
