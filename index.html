@@ -610,6 +610,17 @@
                         <input type="date" id="obj-first-date" class="form-control" required>
                     </div>
 
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Разстояние до обекта (км)</label>
+                            <input type="number" id="obj-distance-km" class="form-control" min="0" step="0.1" placeholder="По подразбиране от настройките">
+                        </div>
+                        <div class="form-group">
+                            <label>Време за обслужване (минути)</label>
+                            <input type="number" id="obj-visit-minutes" class="form-control" min="1" step="1" placeholder="По подразбиране от настройките">
+                        </div>
+                    </div>
+
                     <!-- СПЕЦИАЛНО ПОЛЕ ЗА БАТЕРИИ И КОНСУМАТИВИ -->
                     <div style="background:#fef3c7; border:1px solid #f59e0b; padding:0.85rem; border-radius:8px; margin-bottom:0.85rem;">
                         <h3 style="font-size:0.85rem; color:#92400e; margin-bottom:0.5rem;">🔋 Батерии и Консумативи (Изписват се от Склада):</h3>
@@ -2118,7 +2129,7 @@
                     <span class="field-label">Брой бр. *</span>
                     <input type="number" class="form-control obj-aroma-qty" value="${aromaQty}" min="1" required oninput="updateAllAromaSelects('${containerId}')">
                 </div>
-                <button type="button" class="btn btn-sm btn-danger" onclick="this.parentElement.remove(); updateAllAromaSelects('${containerId}');">-</button>
+                <button type="button" class="btn btn-sm btn-danger" aria-label="Премахни артикула" onclick="removeObjectAromaRow(this, '${containerId}')">−</button>
             `;
             container.appendChild(div);
             updateAllAromaSelects(containerId);
@@ -2205,6 +2216,12 @@
         function calcDirectSaleTotal() {
             const total = directSaleCart.reduce((sum, row) => sum + row.qty * row.price, 0);
             document.getElementById('ds-total-preview').innerText = `${total.toFixed(2)} €`;
+        }
+
+        function removeObjectAromaRow(button, containerId) {
+            const row = button?.closest('.obj-aroma-row');
+            if (row) row.remove();
+            updateAllAromaSelects(containerId);
         }
 
         function addDirectSaleCartItem() {
@@ -2627,8 +2644,14 @@
 
         function deleteInventoryItem(id) {
             if (confirm('Сигурни ли сте, че искате да изтриете този артикул от склада?')) {
-                inventory = inventory.filter(i => i.id !== id);
+                const before = inventory.length;
+                inventory = inventory.filter(i => String(i.id) !== String(id));
+                if (inventory.length === before) {
+                    alert('Артикулът не беше намерен. Обновете страницата и опитайте отново.');
+                    return;
+                }
                 saveData();
+                alert('Артикулът беше изтрит успешно.');
             }
         }
 
@@ -2866,6 +2889,7 @@
             const rawAromas = [];
             let itemsSummaryParts = [];
             let totalItemsCost = 0;
+            let stockError = '';
 
             document.querySelectorAll('#obj-aromas-container .obj-aroma-row').forEach(row => {
                 const aromaName = row.querySelector('.obj-aroma-select').value;
@@ -2874,11 +2898,7 @@
                     const invAroma = inventory.find(i => i.name === aromaName);
                     if (invAroma) {
                         if (!editId && invAroma.qty < aromaQty) {
-                            alert(`Грешка: Няма достатъчно количество от артикул "${aromaName}" в склада!`);
-                            throw new Error('Not enough stock');
-                        }
-                        if (!editId) {
-                            invAroma.qty -= aromaQty;
+                            stockError = `Грешка: Няма достатъчно количество от артикул "${aromaName}" в склада!`;
                         }
                         totalItemsCost += (invAroma.lastPrice || 0) * aromaQty;
                     }
@@ -2888,14 +2908,12 @@
             });
 
             if (invBattery && !editId) {
-                invBattery.qty -= batteryQty;
                 totalItemsCost += (invBattery.lastPrice || 0) * batteryQty;
                 itemsSummaryParts.push(`Батерия: ${invBattery.name} (${batteryQty} бр.)`);
                 rawAromas.push({ name: invBattery.name, qty: batteryQty });
             }
 
             if (invDevice && !editId) {
-                invDevice.qty -= devicesCount;
                 let deviceCost = (invDevice.lastPrice || 0) * devicesCount;
                 totalItemsCost += deviceCost;
                 itemsSummaryParts.push(`Дозатор: ${invDevice.name} (${devicesCount} бр.)`);
@@ -2914,6 +2932,16 @@
                 alert(`Цената е твърде ниска и обектът не може да бъде запазен. Минимална безопасна цена: ${priceSafety.minimumPrice.toFixed(2)} € при зададения целеви марж.`);
                 document.getElementById('obj-custom-fee').value = priceSafety.minimumPrice.toFixed(2);
                 return;
+            }
+
+            // Изписваме наличностите едва след като всички проверки са успешни.
+            // Така не се губи стока, ако формата бъде отказана заради цена или липсващо поле.
+            if (!editId) {
+                rawAromas.forEach(ra => {
+                    const item = inventory.find(i => i.name === ra.name);
+                    if (item) item.qty -= ra.qty;
+                });
+                if (invDevice) invDevice.qty -= devicesCount;
             }
 
             if (editId) {
@@ -3600,6 +3628,10 @@
                     changed = true;
                 }
             });
+            if (stockError) {
+                alert(stockError);
+                return;
+            }
             if (changed) {
                 persistLocalCache();
                 scheduleCloudSave();
